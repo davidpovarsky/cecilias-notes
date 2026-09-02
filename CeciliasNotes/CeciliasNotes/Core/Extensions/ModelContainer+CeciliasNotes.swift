@@ -17,10 +17,9 @@ enum CloudKitContainerStatus: String {
     /// CloudKit was expected but unavailable — the library shows the
     /// "iCloud sync unavailable" banner for this state only.
     case localOnlyFallback
-    /// Local-only on purpose (user preference toggle or `-uiTesting`
-    /// runs). No banner: the user asked for this, and during UI tests
-    /// the banner shifts the library layout and swallows taps meant
-    /// for the toolbar (it deep-links to system Settings).
+    /// Local-only on purpose (user preference toggle, sideload build,
+    /// or `-uiTesting` runs). No banner: this path intentionally does
+    /// not use SwiftData CloudKit.
     case localOnlyIntentional
 }
 
@@ -135,6 +134,18 @@ extension ModelContainer {
         // trap that forces single-version operation.
         let schema = Schema(versionedSchema: CeciliasNotesSchemaV6.self)
 
+        // GitHub's unsigned IPA is re-signed by a sideloading tool and
+        // therefore cannot rely on the original app's CloudKit
+        // entitlement/container. Never instantiate CloudKit in that
+        // build: NSCloudKitMirroringDelegate can terminate the process
+        // asynchronously after ModelContainer.init has already returned,
+        // which means the normal do/catch fallback cannot intercept it.
+        #if SIDELOAD_BUILD
+        let isSideloadBuild = true
+        #else
+        let isSideloadBuild = false
+        #endif
+
         // Under UI tests (`-uiTesting` launch arg) the app resets its
         // UserDefaults, so the user-preference key is always false.
         // But CloudKit's first-save handshake can hold the writer lock
@@ -176,27 +187,28 @@ extension ModelContainer {
         let autoFallback = dirtyStreak >= 2
         // Bump the streak now — when launch completes cleanly the
         // app delegate clears it back to 0 (see CeciliasNotesAppDelegate).
-        // Skip the bump during UI tests: XCTest kills the app process
-        // abruptly (no background callback), which would leave the
-        // streak at 1. A subsequent crashed-test can then push it to 2,
-        // triggering the CloudKit auto-fallback on a real user's launch.
-        if !isUITesting {
+        // Skip the bump during UI tests and sideload builds. Sideload
+        // builds are intentionally local-only and should not affect
+        // CloudKit recovery state if their data container is reused.
+        if !isUITesting && !isSideloadBuild {
             UserDefaults.standard.set(dirtyStreak + 1, forKey: dirtyCountKey)
         }
 
-        if isUITesting || disabledByUser || autoFallback {
+        if isSideloadBuild || isUITesting || disabledByUser || autoFallback {
             #if DEBUG
-            if disabledByUser {
+            if isSideloadBuild {
+                dlog("[ModelContainer] SIDELOAD_BUILD — opening with cloudKitDatabase: .none")
+            } else if disabledByUser {
                 dlog("[ModelContainer] SwiftData CloudKit sync DISABLED by user preference — opening with cloudKitDatabase: .none")
             } else {
                 dlog("[ModelContainer] SwiftData CloudKit sync auto-disabled after \(dirtyStreak) consecutive dirty launches — opening with cloudKitDatabase: .none")
             }
             #endif
-            // Deliberate local-only (test run / user toggle) is not a
-            // failure — don't trigger the library's "iCloud sync
-            // unavailable" banner. The dirty-launch auto-fallback IS
-            // a failure state the user should see.
-            CloudKitContainerState.status = (isUITesting || disabledByUser)
+            // Deliberate local-only (sideload / test run / user toggle)
+            // is not a failure — don't trigger the library's "iCloud
+            // sync unavailable" banner. The dirty-launch auto-fallback
+            // IS a failure state the user should see.
+            CloudKitContainerState.status = (isSideloadBuild || isUITesting || disabledByUser)
                 ? .localOnlyIntentional
                 : .localOnlyFallback
             let localConfig = ModelConfiguration(
