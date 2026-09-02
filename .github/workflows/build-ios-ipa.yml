@@ -40,6 +40,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/CeciliasNotesDerivedData" \
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) SIDELOAD_BUILD' \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
