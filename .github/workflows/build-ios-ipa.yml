@@ -1,0 +1,88 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios-ipa:
+    name: Build unsigned Cecilia's Notes IPA
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build iOS app without code signing
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CeciliasNotes/CeciliasNotes.xcodeproj \
+            -scheme CeciliasNotes \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/CeciliasNotesDerivedData" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRODUCTS_DIR="$RUNNER_TEMP/CeciliasNotesDerivedData/Build/Products/Release-iphoneos"
+          APP_PATH="$PRODUCTS_DIR/CeciliasNotes.app"
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "Expected app bundle not found at: $APP_PATH"
+            echo "Available app bundles:"
+            find "$RUNNER_TEMP/CeciliasNotesDerivedData/Build/Products" -maxdepth 3 -name '*.app' -print || true
+            exit 1
+          fi
+
+          PACKAGE_DIR="$RUNNER_TEMP/CeciliasNotesIPA"
+          mkdir -p "$PACKAGE_DIR/Payload"
+          cp -R "$APP_PATH" "$PACKAGE_DIR/Payload/"
+
+          cd "$PACKAGE_DIR"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/CeciliasNotes.ipa" Payload
+
+          echo "Created IPA:"
+          ls -lh "$GITHUB_WORKSPACE/CeciliasNotes.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CeciliasNotes-unsigned-ipa
+          path: CeciliasNotes.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CeciliasNotes-xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
